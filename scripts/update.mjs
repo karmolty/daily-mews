@@ -372,12 +372,21 @@ function renderHtml({ datePretty, meme, headlines }) {
 </html>`;
 }
 
-async function main() {
-  const nowLA = DateTime.now().setZone(TZ);
-  // We run on a schedule, but only publish at 06:00 LA time.
-  if (process.env.FORCE_UPDATE !== "1" && nowLA.hour !== 6) {
-    console.log(`[skip] It's ${nowLA.toFormat("HH:mm")} in ${TZ}; only updating at 06:xx.`);
-    return;
+async function main() {  const nowLA = DateTime.now().setZone(TZ);
+
+  // Idempotency: only publish once per LA-local day (even if GitHub cron is delayed).
+  if (process.env.FORCE_UPDATE !== "1") {
+    try {
+      const prev = JSON.parse(fs.readFileSync(path.join(SITE_DIR, "data.json"), "utf8"));
+      const prevDate = DateTime.fromISO(prev.updatedAt).setZone(TZ).toISODate();
+      const today = nowLA.toISODate();
+      if (prevDate === today) {
+        console.log(`[skip] Already updated for ${today} (${TZ}).`);
+        return;
+      }
+    } catch {
+      // No previous data; proceed.
+    }
   }
 
   const datePretty = nowLA.toFormat("cccc, LLLL d, yyyy • h:mm a ZZZZ");
