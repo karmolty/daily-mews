@@ -2,8 +2,11 @@ name: Update The Daily Mews
 
 on:
   schedule:
-    # Run hourly; script only publishes at ~06:xx America/Los_Angeles.
-    - cron: "17 * * * *"
+    # Run once per day at 6AM Los Angeles time.
+    # GitHub cron is UTC; 13:17 UTC == 06:17 PDT, 14:17 UTC == 06:17 PST.
+    # The script only publishes when local LA hour==6, so it updates exactly once per day.
+    - cron: "17 13 * * *"
+    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
       force:
