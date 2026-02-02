@@ -323,7 +323,7 @@ function renderHtml({ datePretty, meme, headlines }) {
 
     <footer>
       © ${escapeHtml(String(new Date().getUTCFullYear()))} The Daily Mews • Best viewed on a beige CRT •
-      <a href="https://github.com/karmolty/public-sandbox" target="_blank" rel="noreferrer">source</a>
+      <a href="https://github.com/karmolty/daily-mews" target="_blank" rel="noreferrer">source</a>
     </footer>
   </div>
 </body>
