@@ -1,8 +1,17 @@
 name: Deploy GitHub Pages
 
 on:
+  # For normal human pushes to main.
   push:
     branches: ["main"]
+
+  # For commits created by the scheduled updater workflow.
+  # (GitHub does not trigger push-based workflows from a workflow's GITHUB_TOKEN push.)
+  workflow_run:
+    workflows: ["Update The Daily Mews"]
+    types:
+      - completed
+
   workflow_dispatch:
 
 permissions:
@@ -16,6 +25,8 @@ concurrency:
 
 jobs:
   deploy:
+    # Only deploy on successful updater runs (workflow_run), otherwise deploy on normal push/dispatch.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -23,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

@@ -71,39 +71,17 @@ function decodeXmlEntities(s) {
     .replaceAll("&#39;", "'");
 }
 
-async function findDailyMeme() {
-  // Reddit’s JSON endpoints often 403 from CI/servers; Atom RSS is more reliable.
-  const rssUrl = "https://www.reddit.com/r/Catmemes/top/.rss?t=day";
-  const res = await fetch(rssUrl, {
-    headers: { "user-agent": "TheDailyMewsBot/1.0 (GitHub Actions)" }
-  });
-  if (!res.ok) throw new Error(`fetch failed ${res.status} for ${rssUrl}`);
-  const xml = await res.text();
+function isSameMeme(a, b) {
+  if (!a || !b) return false;
 
-  const entryMatch = xml.match(/<entry>([\s\S]*?)<\/entry>/);
-  if (entryMatch) {
-    const entry = entryMatch[1];
-    const title = decodeXmlEntities((entry.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || "A Very Serious Cat Development").trim();
-    const permalink = decodeXmlEntities((entry.match(/<link\s+href="([^"]+)"\s*\/>/) || [])[1] || "https://www.reddit.com/r/Catmemes/");
+  // Prefer stable IDs/URLs.
+  if (a.id && b.id && a.id === b.id) return true;
+  if (a.permalink && b.permalink && a.permalink === b.permalink) return true;
 
-    // Prefer media:thumbnail; otherwise look for an <img src="..."> in the HTML content.
-    const thumb = decodeXmlEntities((entry.match(/<media:thumbnail\s+url="([^"]+)"\s*\/>/) || [])[1] || "");
-    const contentImg = decodeXmlEntities((entry.match(/<content[^>]*>.*?<img\s+src=&quot;([^&]*)&quot;/) || [])[1] || "");
+  // Fallback: same title + same image URL.
+  if (a.title && b.title && a.title === b.title && a.imageUrl && b.imageUrl && a.imageUrl === b.imageUrl) return true;
 
-    const candidates = [thumb, contentImg].filter(Boolean).map((u) => u.replaceAll("&amp;", "&"));
-    const imageUrl = candidates.find((u) => isLikelyImageUrl(u)) || candidates[0];
-
-    if (imageUrl) {
-      return { title, permalink, imageUrl };
-    }
-  }
-
-  // Last resort: a stable, always-on cat image.
-  return {
-    title: "Breaking: Cat Seen Being A Cat",
-    permalink: "https://www.reddit.com/r/Catmemes/",
-    imageUrl: "https://cataas.com/cat"
-  };
+  return false;
 }
 
 async function getCatmemesRssEntries() {
@@ -119,6 +97,8 @@ async function getCatmemesRssEntries() {
   let m;
   while ((m = re.exec(xml))) {
     const entry = m[1];
+
+    const id = decodeXmlEntities((entry.match(/<id>([\s\S]*?)<\/id>/) || [])[1] || "").trim();
     const title = decodeXmlEntities((entry.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || "").trim();
     const permalink = decodeXmlEntities((entry.match(/<link\s+href="([^"]+)"\s*\/>/) || [])[1] || "");
     const author = decodeXmlEntities(
@@ -127,10 +107,38 @@ async function getCatmemesRssEntries() {
       )[1] || ""
     ).trim();
 
-    if (title && permalink) entries.push({ title, permalink, author });
+    // Prefer media:thumbnail; otherwise look for an <img src="..."> in the HTML content.
+    const thumb = decodeXmlEntities((entry.match(/<media:thumbnail\s+url="([^"]+)"\s*\/>/) || [])[1] || "");
+    const contentImg = decodeXmlEntities((entry.match(/<content[^>]*>.*?<img\s+src=&quot;([^&]*)&quot;/) || [])[1] || "");
+
+    const candidates = [thumb, contentImg].filter(Boolean).map((u) => u.replaceAll("&amp;", "&"));
+    const imageUrl = candidates.find((u) => isLikelyImageUrl(u)) || candidates[0] || "";
+
+    if (title && permalink) entries.push({ id, title, permalink, author, imageUrl });
   }
 
   return entries;
+}
+
+async function findDailyMeme(prevMeme) {
+  // Simple rule:
+  // - Take today's #1 entry
+  // - If it matches yesterday's meme (same id/permalink/title+image), fall back to #2, then #3, etc.
+  const entries = await getCatmemesRssEntries();
+
+  const withImages = entries.filter((e) => e.imageUrl);
+  const picked = withImages.find((e) => !isSameMeme(e, prevMeme)) || withImages[0];
+
+  if (picked && picked.imageUrl) {
+    return { id: picked.id, title: picked.title, permalink: picked.permalink, imageUrl: picked.imageUrl };
+  }
+
+  // Last resort: a stable, always-on cat image.
+  return {
+    title: "Breaking: Cat Seen Being A Cat",
+    permalink: "https://www.reddit.com/r/Catmemes/",
+    imageUrl: "https://cataas.com/cat"
+  };
 }
 
 function normalizeTitle(s) {
@@ -372,20 +380,23 @@ function renderHtml({ datePretty, meme, headlines }) {
 </html>`;
 }
 
-async function main() {  const nowLA = DateTime.now().setZone(TZ);
+async function main() {
+  const nowLA = DateTime.now().setZone(TZ);
+
+  let prev = null;
+  try {
+    prev = JSON.parse(fs.readFileSync(path.join(SITE_DIR, "data.json"), "utf8"));
+  } catch {
+    // No previous data; proceed.
+  }
 
   // Idempotency: only publish once per LA-local day (even if GitHub cron is delayed).
-  if (process.env.FORCE_UPDATE !== "1") {
-    try {
-      const prev = JSON.parse(fs.readFileSync(path.join(SITE_DIR, "data.json"), "utf8"));
-      const prevDate = DateTime.fromISO(prev.updatedAt).setZone(TZ).toISODate();
-      const today = nowLA.toISODate();
-      if (prevDate === today) {
-        console.log(`[skip] Already updated for ${today} (${TZ}).`);
-        return;
-      }
-    } catch {
-      // No previous data; proceed.
+  if (process.env.FORCE_UPDATE !== "1" && prev?.updatedAt) {
+    const prevDate = DateTime.fromISO(prev.updatedAt).setZone(TZ).toISODate();
+    const today = nowLA.toISODate();
+    if (prevDate === today) {
+      console.log(`[skip] Already updated for ${today} (${TZ}).`);
+      return;
     }
   }
 
@@ -396,7 +407,7 @@ async function main() {  const nowLA = DateTime.now().setZone(TZ);
   const seed = Number(dateStr.replaceAll("-", ""));
   const rand = mulberry32(seed);
 
-  const meme = await findDailyMeme();
+  const meme = await findDailyMeme(prev?.meme);
   await downloadToFile(meme.imageUrl, MEME_PATH);
 
   const headlines = await buildHeadlines(dateStr, rand, meme.title);
